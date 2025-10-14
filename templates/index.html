@@ -4,7 +4,8 @@
   <title>PIT Tag Manager</title>
   <style>
     body { font-family: Arial, sans-serif; margin: 40px; }
-    h2 { color: #2a4d7f; }
+    h1 { color: #2a4d7f; }
+    h2 { color: #1d355d; }
     form { margin-bottom: 20px; padding: 10px; border: 1px solid #ccc; }
     input, button { margin-top: 10px; padding: 6px; }
     button { background-color: #2a4d7f; color: white; border: none; cursor: pointer; }
@@ -31,6 +32,11 @@
   <h2>3. Download Current Database</h2>
   <form method="get" action="/download">
     <button type="submit">Download Master CSV</button>
+  </form>
+
+  <h2>4. Remove Duplicates</h2>
+  <form method="post" action="/dedupe">
+    <button type="submit">Clean Database</button>
   </form>
 </body>
 </html>

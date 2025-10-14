@@ -2,7 +2,9 @@ from flask import Flask, request, render_template, send_file
 import re, pandas as pd, os
 
 app = Flask(__name__)
-MASTER_FILE = "pit_master.csv"
+import os
+MASTER_FILE = os.path.join(os.path.dirname(__file__), "pit_master.csv")
+
 
 # Regex to capture PIT TAG lines
 tag_pattern = re.compile(r"TAG:\s+(\d+)\s+(\d+)\s+(\d+/\d+/\d+\s+\d+:\d+:\d+\.\d+)\s+([0-9A-F.]+)")
