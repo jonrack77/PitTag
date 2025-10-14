@@ -27,15 +27,26 @@ def upload():
                 all_records.append((timestamp, gate, fish_id, fname))
 
     if all_records:
-        df = pd.DataFrame(all_records, columns=["timestamp", "gate", "fish_id", "file_name"])
-        df["timestamp"] = pd.to_datetime(df["timestamp"], format="%m/%d/%Y %H:%M:%S.%f")
+        new_df = pd.DataFrame(all_records, columns=["timestamp", "gate", "fish_id", "file_name"])
+        new_df["timestamp"] = pd.to_datetime(new_df["timestamp"], format="%m/%d/%Y %H:%M:%S.%f")
 
+        # If master file exists, load and combine
         if os.path.exists(MASTER_FILE):
-            df.to_csv(MASTER_FILE, mode="a", header=False, index=False)
-        else:
-            df.to_csv(MASTER_FILE, index=False)
+            old_df = pd.read_csv(MASTER_FILE, parse_dates=["timestamp"])
+            combined = pd.concat([old_df, new_df], ignore_index=True)
 
-        return f"✅ Import complete! Added {len(all_records)} detections."
+            # Drop duplicates based on key columns
+            combined.drop_duplicates(subset=["timestamp", "gate", "fish_id", "file_name"], inplace=True)
+
+            combined.to_csv(MASTER_FILE, index=False)
+            added = len(combined) - len(old_df)
+        else:
+            # First import
+            new_df.drop_duplicates(subset=["timestamp", "gate", "fish_id", "file_name"], inplace=True)
+            new_df.to_csv(MASTER_FILE, index=False)
+            added = len(new_df)
+
+        return f"✅ Import complete! Added {added} new detections (duplicates skipped)."
     else:
         return "⚠️ No PIT tag detections found in uploaded files."
 
@@ -57,14 +68,30 @@ def delete_records():
 
     return f"🗑️ Deleted {deleted} records from {target_file}."
 
+@app.route("/dedupe", methods=["POST"])
+def dedupe():
+    if not os.path.exists(MASTER_FILE):
+        return "⚠️ No master file found yet."
+
+    df = pd.read_csv(MASTER_FILE, parse_dates=["timestamp"])
+    before_count = len(df)
+
+    df.drop_duplicates(subset=["timestamp", "gate", "fish_id", "file_name"], inplace=True)
+
+    after_count = len(df)
+    removed = before_count - after_count
+
+    df.to_csv(MASTER_FILE, index=False)
+
+    return f"✨ Removed {removed} duplicate records."
+
 @app.route("/download", methods=["GET"])
 def download():
     if not os.path.exists(MASTER_FILE):
         return "⚠️ No data file to download yet."
     return send_file(MASTER_FILE, as_attachment=True)
 
-import os
-
 if __name__ == "__main__":
+    import os
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
