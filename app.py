@@ -96,7 +96,7 @@ def api_upload():
 
 @app.get("/api/records")
 def api_records():
-    rows = Record.query.limit(1000).all()
+    rows = Record.query.order_by(Record.timestamp.desc()).limit(1000).all()
     return jsonify([{"gate": r.gate, "timestamp": r.timestamp, "fishid": r.fishid, "logfile": r.logfile} for r in rows])
 
 @app.get("/api/counts")

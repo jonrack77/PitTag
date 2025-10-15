@@ -40,6 +40,7 @@ async function refresh() {
   counts.textContent = `Antenna hits: ${c.antenna_hits}\nUnique fish: ${c.unique_fish}`;
 
   const rows = await recRes.json();
+  rows.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
   tbody.innerHTML = '';
   const frag = document.createDocumentFragment();
   for (const r of rows) {
