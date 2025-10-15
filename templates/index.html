@@ -1,42 +1,43 @@
-<!DOCTYPE html>
-<html>
+<!doctype html>
+<html lang="en">
 <head>
-  <title>PIT Tag Manager</title>
+  <meta charset="utf-8" />
+  <title>PitTag Uploader</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
-    body { font-family: Arial, sans-serif; margin: 40px; }
-    h1 { color: #2a4d7f; }
-    h2 { color: #1d355d; }
-    form { margin-bottom: 20px; padding: 10px; border: 1px solid #ccc; }
-    input, button { margin-top: 10px; padding: 6px; }
-    button { background-color: #2a4d7f; color: white; border: none; cursor: pointer; }
-    button:hover { background-color: #1d355d; }
+    body { font-family: system-ui, Arial, sans-serif; margin: 24px; }
+    h1 { margin: 0 0 8px; }
+    .box { border: 1px solid #ddd; padding: 16px; margin: 12px 0; }
+    table { border-collapse: collapse; width: 100%; margin-top: 12px; }
+    th, td { border: 1px solid #ddd; padding: 6px 8px; text-align: center; }
+    thead th { background: #f4f4f4; position: sticky; top: 0; }
+    button { padding: 8px 12px; }
   </style>
 </head>
 <body>
-  <h1>PIT Tag Data Manager</h1>
+  <h1>PitTag Manager</h1>
 
-  <h2>1. Import PIT Tag Data</h2>
-  <form enctype="multipart/form-data" method="post" action="/upload">
-    <input type="file" name="files" multiple required>
-    <br>
-    <button type="submit">Import PIT Tag</button>
-  </form>
+  <div class="box">
+    <h3>Upload .log files</h3>
+    <input id="files" type="file" multiple accept=".log" />
+    <button id="uploadBtn">Upload & Process</button>
+    <pre id="uploadResult"></pre>
+  </div>
 
-  <h2>2. Delete Records by File</h2>
-  <form method="post" action="/delete">
-    <input type="text" name="filename" placeholder="e.g. 01_01607.log" required>
-    <br>
-    <button type="submit">Delete Records</button>
-  </form>
+  <div class="box">
+    <h3>Records</h3>
+    <button id="refreshBtn">Refresh</button>
+    <pre id="counts"></pre>
+    <table>
+      <thead>
+        <tr>
+          <th>Gate</th><th>Timestamp</th><th>FishID</th><th>Log File</th>
+        </tr>
+      </thead>
+      <tbody id="tbody"></tbody>
+    </table>
+  </div>
 
-  <h2>3. Download Current Database</h2>
-  <form method="get" action="/download">
-    <button type="submit">Download Master CSV</button>
-  </form>
-
-  <h2>4. Remove Duplicates</h2>
-  <form method="post" action="/dedupe">
-    <button type="submit">Clean Database</button>
-  </form>
+  <script src="/static/app.js"></script>
 </body>
 </html>
