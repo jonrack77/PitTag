@@ -12,6 +12,7 @@
     th, td { border: 1px solid #ddd; padding: 6px 8px; text-align: center; }
     thead th { background: #f4f4f4; position: sticky; top: 0; }
     button { padding: 8px 12px; }
+    #uploadResult.status-error { color: #b30000; font-weight: 600; }
   </style>
 </head>
 <body>
@@ -21,7 +22,7 @@
     <h3>Upload .log files</h3>
     <input id="files" type="file" multiple accept=".log" />
     <button id="uploadBtn">Upload & Process</button>
-    <pre id="uploadResult"></pre>
+    <pre id="uploadResult" aria-live="polite"></pre>
   </div>
 
   <div class="box">
