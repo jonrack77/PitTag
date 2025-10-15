@@ -1,7 +1,7 @@
 import os
 from flask import Flask, request, jsonify, render_template
 from flask_sqlalchemy import SQLAlchemy
-from sqlalchemy import func
+from sqlalchemy import func, tuple_
 from datetime import date
 
 app = Flask(__name__)
@@ -14,6 +14,10 @@ db = SQLAlchemy(app)
 
 # --- Models ---
 class Record(db.Model):
+    __table_args__ = (
+        db.UniqueConstraint("gate", "timestamp", "fishid", name="uq_gate_timestamp_fish"),
+    )
+
     id = db.Column(db.Integer, primary_key=True)
     gate = db.Column(db.String, nullable=False)
     timestamp = db.Column(db.String, nullable=False)  # keep as text for now
@@ -80,8 +84,30 @@ def api_upload():
                 cleaned.extend(run)
 
         if cleaned:
-            db.session.add_all(cleaned)
-            added_count = len(cleaned)
+            unique_batch = []
+            seen_keys = set()
+            for record in cleaned:
+                key = (record.gate, record.timestamp, record.fishid)
+                if key in seen_keys:
+                    continue
+                seen_keys.add(key)
+                unique_batch.append(record)
+
+            keys = [(r.gate, r.timestamp, r.fishid) for r in unique_batch]
+            existing = set()
+            if keys:
+                existing_rows = (
+                    db.session.query(Record.gate, Record.timestamp, Record.fishid)
+                    .filter(tuple_(Record.gate, Record.timestamp, Record.fishid).in_(keys))
+                    .all()
+                )
+                existing = set(existing_rows)
+
+            to_insert = [r for r in unique_batch if (r.gate, r.timestamp, r.fishid) not in existing]
+
+            if to_insert:
+                db.session.add_all(to_insert)
+                added_count = len(to_insert)
 
         total_dummy += dummy_count
         total_added += added_count
