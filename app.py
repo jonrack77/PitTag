@@ -1,99 +1,162 @@
-from flask import Flask, request, render_template, send_file
-import re, pandas as pd, os
+import os
+import sqlite3
+from flask import Flask, request, jsonify, render_template
+
+# === Config ===
+# Local: use ./db/PitTagRecord.db
+# Render (with Disk): set env DB_PATH (e.g., /var/data/PitTagRecord.db)
+DB_PATH = os.getenv("DB_PATH", os.path.join("db", "PitTagRecord.db"))
 
 app = Flask(__name__)
-import os
-MASTER_FILE = os.path.join(os.path.dirname(__file__), "pit_master.csv")
 
+# === DB Helpers ===
+def get_conn():
+    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
 
-# Regex to capture PIT TAG lines
-tag_pattern = re.compile(r"TAG:\s+(\d+)\s+(\d+)\s+(\d+/\d+/\d+\s+\d+:\d+:\d+\.\d+)\s+([0-9A-F.]+)")
+def init_db():
+    with get_conn() as conn:
+        c = conn.cursor()
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS records (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                gate TEXT NOT NULL,
+                timestamp TEXT NOT NULL,
+                fishid TEXT NOT NULL,
+                logfile TEXT NOT NULL
+            )
+        """)
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS imports (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                filename TEXT NOT NULL UNIQUE,
+                imported_on TEXT NOT NULL
+            )
+        """)
+        conn.commit()
 
+# === Routes ===
 @app.route("/")
 def index():
     return render_template("index.html")
 
-@app.route("/upload", methods=["POST"])
-def upload():
-    all_records = []
+@app.post("/api/upload")
+def api_upload():
+    """
+    Accepts one or more .log files (multipart/form-data, field name 'files').
+    Parses lines starting with TAG, drops dummy tags D01–D07,
+    and inserts rows into 'records'. Also records imports.
+    """
+    if 'files' not in request.files:
+        return jsonify({"error": "No files part"}), 400
 
-    for file in request.files.getlist("files"):
-        fname = file.filename
-        lines = file.read().decode("utf-8").splitlines()
-        for line in lines:
-            match = tag_pattern.search(line)
-            if match:
-                gate = match.group(2)           # Node (Gate)
-                timestamp = match.group(3)     # Date + Time
-                fish_id = match.group(4)       # PIT Tag code
-                all_records.append((timestamp, gate, fish_id, fname))
+    files = request.files.getlist('files')
+    total_added = 0
+    total_dummy = 0
+    imported = []
 
-    if all_records:
-        new_df = pd.DataFrame(all_records, columns=["timestamp", "gate", "fish_id", "file_name"])
-        new_df["timestamp"] = pd.to_datetime(new_df["timestamp"], format="%m/%d/%Y %H:%M:%S.%f")
+    with get_conn() as conn:
+        c = conn.cursor()
+        for f in files:
+            fname = f.filename or "unknown.log"
+            text = f.read().decode("utf-8", errors="ignore")
+            lines = text.splitlines()
 
-        # If master file exists, load and combine
-        if os.path.exists(MASTER_FILE):
-            old_df = pd.read_csv(MASTER_FILE, parse_dates=["timestamp"])
-            combined = pd.concat([old_df, new_df], ignore_index=True)
+            # Skip if already imported (same filename)
+            try:
+                c.execute("INSERT INTO imports (filename, imported_on) VALUES (?, date('now'))", (fname,))
+            except sqlite3.IntegrityError:
+                # already imported; keep going only if you want to allow duplicates per file
+                pass
 
-            # Drop duplicates based on key columns
-            combined.drop_duplicates(subset=["timestamp", "gate", "fish_id", "file_name"], inplace=True)
+            batch = []
+            dummy = 0
+            added = 0
 
-            combined.to_csv(MASTER_FILE, index=False)
-            added = len(combined) - len(old_df)
-        else:
-            # First import
-            new_df.drop_duplicates(subset=["timestamp", "gate", "fish_id", "file_name"], inplace=True)
-            new_df.to_csv(MASTER_FILE, index=False)
-            added = len(new_df)
+            for line in lines:
+                if not line.startswith("TAG"):
+                    continue
+                parts = line.split()
+                if len(parts) < 6:
+                    continue
+                gate = parts[2]
+                ts = parts[3] + " " + parts[4]
+                fish = parts[5]
+                tag_end = fish[-3:]
+                if "D01" <= tag_end <= "D07":
+                    dummy += 1
+                    continue
+                batch.append((gate, ts, fish, fname))
 
-        return f"✅ Import complete! Added {added} new detections (duplicates skipped)."
-    else:
-        return "⚠️ No PIT tag detections found in uploaded files."
+            # Sort by fishid then timestamp (string compare to match Excel text behavior)
+            batch.sort(key=lambda r: (r[2], r[1]))
 
-@app.route("/delete", methods=["POST"])
-def delete_records():
-    target_file = request.form.get("filename")
+            # Remove "in-between" duplicates for runs with same (fishid, gate)
+            cleaned = []
+            i = 0
+            while i < len(batch):
+                start = i
+                fid = batch[i][2]
+                g = batch[i][0]
+                i += 1
+                while i < len(batch) and batch[i][2] == fid and batch[i][0] == g:
+                    i += 1
+                run = batch[start:i]
+                if len(run) >= 3:
+                    cleaned.append(run[0])      # keep first
+                    cleaned.append(run[-1])     # keep last
+                else:
+                    cleaned.extend(run)
 
-    if not os.path.exists(MASTER_FILE):
-        return "⚠️ No master file found yet."
+            if cleaned:
+                c.executemany("INSERT INTO records (gate, timestamp, fishid, logfile) VALUES (?,?,?,?)", cleaned)
+                added = len(cleaned)
 
-    df = pd.read_csv(MASTER_FILE, parse_dates=["timestamp"])
-    before_count = len(df)
+            total_dummy += dummy
+            total_added += added
+            imported.append({"file": fname, "added": added, "dummy_removed": dummy})
 
-    df = df[df["file_name"] != target_file]
-    after_count = len(df)
+        conn.commit()
 
-    df.to_csv(MASTER_FILE, index=False)
-    deleted = before_count - after_count
+    return jsonify({
+        "summary": {"total_added": total_added, "total_dummy_removed": total_dummy},
+        "details": imported
+    })
 
-    return f"🗑️ Deleted {deleted} records from {target_file}."
+@app.get("/api/records")
+def api_records():
+    """
+    Returns records (optional simple pagination).
+    Query params: offset, limit
+    """
+    offset = int(request.args.get("offset", 0))
+    limit = int(request.args.get("limit", 1000))
+    with get_conn() as conn:
+        c = conn.cursor()
+        c.execute("SELECT gate, timestamp, fishid, logfile FROM records ORDER BY fishid, timestamp LIMIT ? OFFSET ?", (limit, offset))
+        rows = [dict(r) for r in c.fetchall()]
+        return jsonify(rows)
 
-@app.route("/dedupe", methods=["POST"])
-def dedupe():
-    if not os.path.exists(MASTER_FILE):
-        return "⚠️ No master file found yet."
+@app.get("/api/counts")
+def api_counts():
+    with get_conn() as conn:
+        c = conn.cursor()
+        c.execute("SELECT COUNT(*) FROM records")
+        total = c.fetchone()[0]
+        c.execute("SELECT COUNT(DISTINCT fishid) FROM records")
+        unique_fish = c.fetchone()[0]
+        return jsonify({"antenna_hits": total, "unique_fish": unique_fish})
 
-    df = pd.read_csv(MASTER_FILE, parse_dates=["timestamp"])
-    before_count = len(df)
-
-    df.drop_duplicates(subset=["timestamp", "gate", "fish_id", "file_name"], inplace=True)
-
-    after_count = len(df)
-    removed = before_count - after_count
-
-    df.to_csv(MASTER_FILE, index=False)
-
-    return f"✨ Removed {removed} duplicate records."
-
-@app.route("/download", methods=["GET"])
-def download():
-    if not os.path.exists(MASTER_FILE):
-        return "⚠️ No data file to download yet."
-    return send_file(MASTER_FILE, as_attachment=True)
+@app.get("/api/imports")
+def api_imports():
+    with get_conn() as conn:
+        c = conn.cursor()
+        c.execute("SELECT filename, imported_on FROM imports ORDER BY imported_on DESC")
+        rows = [dict(r) for r in c.fetchall()]
+        return jsonify(rows)
 
 if __name__ == "__main__":
-    import os
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+    init_db()
+    app.run(host="0.0.0.0", port=5000, debug=True)
