@@ -10,6 +10,25 @@ function setStatus(message, isError = false) {
   uploadResult.classList.toggle('status-error', Boolean(isError));
 }
 
+function formatErrorMessage(payload) {
+  if (!payload || typeof payload !== 'object') {
+    return '';
+  }
+
+  const parts = [];
+  if (typeof payload.error === 'string' && payload.error.trim()) {
+    parts.push(payload.error.trim());
+  }
+  if (typeof payload.code === 'string' && payload.code.trim()) {
+    parts.push(`[${payload.code.trim()}]`);
+  }
+  if (typeof payload.detail === 'string' && payload.detail.trim()) {
+    parts.push(payload.detail.trim());
+  }
+
+  return parts.join(' ').trim();
+}
+
 uploadBtn.addEventListener('click', async () => {
   const files = filesInput.files;
   if (!files || !files.length) {
@@ -28,9 +47,14 @@ uploadBtn.addEventListener('click', async () => {
     const payload = isJson ? await res.json() : await res.text();
 
     if (!res.ok) {
-      const message = isJson && payload && payload.error ? payload.error : res.statusText;
-      const detail = isJson && payload && payload.detail ? ` (${payload.detail})` : '';
-      throw new Error((message || 'Upload failed') + detail);
+      let message = res.statusText || 'Upload failed';
+      if (isJson) {
+        const formatted = formatErrorMessage(payload);
+        if (formatted) {
+          message = formatted;
+        }
+      }
+      throw new Error(message);
     }
 
     if (isJson && payload && typeof payload === 'object') {
@@ -124,7 +148,14 @@ async function safeReadText(res) {
     if (contentType.includes('application/json')) {
       const body = await res.json();
       if (body && typeof body === 'object') {
-        return body.error || body.message || JSON.stringify(body);
+        const formatted = formatErrorMessage(body);
+        if (formatted) {
+          return formatted;
+        }
+        if (typeof body.message === 'string' && body.message.trim()) {
+          return body.message.trim();
+        }
+        return JSON.stringify(body);
       }
     }
     return await res.text();
