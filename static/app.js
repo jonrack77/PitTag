@@ -20,7 +20,7 @@ uploadBtn.addEventListener('click', async () => {
   try {
     const res = await fetch('/api/upload', { method: 'POST', body: fd });
     const data = await res.json();
-    uploadResult.textContent = JSON.stringify(data, null, 2);
+    uploadResult.textContent = formatUploadResult(data);
     await refresh();
   } catch (e) {
     uploadResult.textContent = 'Error: ' + e.message;
@@ -40,6 +40,7 @@ async function refresh() {
   counts.textContent = `Antenna hits: ${c.antenna_hits}\nUnique fish: ${c.unique_fish}`;
 
   const rows = await recRes.json();
+  rows.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
   tbody.innerHTML = '';
   const frag = document.createDocumentFragment();
   for (const r of rows) {
@@ -52,3 +53,36 @@ async function refresh() {
 
 // initial load
 refresh();
+
+function formatUploadResult(data) {
+  if (!data || typeof data !== 'object') {
+    return '';
+  }
+
+  const lines = [];
+
+  if (Array.isArray(data.details) && data.details.length) {
+    lines.push('Details:');
+    for (const detail of data.details) {
+      const parts = [];
+      if (detail.file) parts.push(`File: ${detail.file}`);
+      if (typeof detail.added === 'number') parts.push(`Added: ${detail.added}`);
+      if (typeof detail.dummy_removed === 'number') {
+        parts.push(`Dummy removed: ${detail.dummy_removed}`);
+      }
+      lines.push(`  - ${parts.join(', ')}`);
+    }
+  }
+
+  if (data.summary && typeof data.summary === 'object') {
+    lines.push('Summary:');
+    if (typeof data.summary.total_added === 'number') {
+      lines.push(`  Total added: ${data.summary.total_added}`);
+    }
+    if (typeof data.summary.total_dummy_removed === 'number') {
+      lines.push(`  Total dummy removed: ${data.summary.total_dummy_removed}`);
+    }
+  }
+
+  return lines.join('\n');
+}
