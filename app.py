@@ -1,162 +1,114 @@
 import os
-import sqlite3
 from flask import Flask, request, jsonify, render_template
-
-# === Config ===
-# Local: use ./db/PitTagRecord.db
-# Render (with Disk): set env DB_PATH (e.g., /var/data/PitTagRecord.db)
-DB_PATH = os.getenv("DB_PATH", os.path.join("db", "PitTagRecord.db"))
+from flask_sqlalchemy import SQLAlchemy
+from sqlalchemy import func
+from datetime import date
 
 app = Flask(__name__)
 
-# === DB Helpers ===
-def get_conn():
-    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+# Connect to Postgres using the DATABASE_URL from Render
+app.config["SQLALCHEMY_DATABASE_URI"] = os.getenv("DATABASE_URL")
+app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
-def init_db():
-    with get_conn() as conn:
-        c = conn.cursor()
-        c.execute("""
-            CREATE TABLE IF NOT EXISTS records (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                gate TEXT NOT NULL,
-                timestamp TEXT NOT NULL,
-                fishid TEXT NOT NULL,
-                logfile TEXT NOT NULL
-            )
-        """)
-        c.execute("""
-            CREATE TABLE IF NOT EXISTS imports (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                filename TEXT NOT NULL UNIQUE,
-                imported_on TEXT NOT NULL
-            )
-        """)
-        conn.commit()
+db = SQLAlchemy(app)
 
-# === Routes ===
+# --- Models ---
+class Record(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    gate = db.Column(db.String, nullable=False)
+    timestamp = db.Column(db.String, nullable=False)  # keep as text for now
+    fishid = db.Column(db.String, nullable=False)
+    logfile = db.Column(db.String, nullable=False)
+
+class Import(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    filename = db.Column(db.String, unique=True, nullable=False)
+    imported_on = db.Column(db.String, nullable=False)
+
+# Create tables automatically
+with app.app_context():
+    db.create_all()
+
 @app.route("/")
 def index():
     return render_template("index.html")
 
 @app.post("/api/upload")
 def api_upload():
-    """
-    Accepts one or more .log files (multipart/form-data, field name 'files').
-    Parses lines starting with TAG, drops dummy tags D01–D07,
-    and inserts rows into 'records'. Also records imports.
-    """
-    if 'files' not in request.files:
-        return jsonify({"error": "No files part"}), 400
+    if "files" not in request.files:
+        return jsonify({"error": "No files uploaded"}), 400
 
-    files = request.files.getlist('files')
-    total_added = 0
-    total_dummy = 0
-    imported = []
+    files = request.files.getlist("files")
+    total_added, total_dummy = 0, 0
+    details = []
 
-    with get_conn() as conn:
-        c = conn.cursor()
-        for f in files:
-            fname = f.filename or "unknown.log"
-            text = f.read().decode("utf-8", errors="ignore")
-            lines = text.splitlines()
+    for f in files:
+        fname = f.filename
+        lines = f.read().decode("utf-8", errors="ignore").splitlines()
 
-            # Skip if already imported (same filename)
-            try:
-                c.execute("INSERT INTO imports (filename, imported_on) VALUES (?, date('now'))", (fname,))
-            except sqlite3.IntegrityError:
-                # already imported; keep going only if you want to allow duplicates per file
-                pass
+        dummy_count, added_count = 0, 0
+        batch = []
 
-            batch = []
-            dummy = 0
-            added = 0
+        for line in lines:
+            if not line.startswith("TAG"):
+                continue
+            parts = line.split()
+            if len(parts) < 6:
+                continue
+            gate, ts, fish = parts[2], parts[3] + " " + parts[4], parts[5]
+            tag_end = fish[-3:]
+            if "D01" <= tag_end <= "D07":
+                dummy_count += 1
+                continue
+            batch.append(Record(gate=gate, timestamp=ts, fishid=fish, logfile=fname))
 
-            for line in lines:
-                if not line.startswith("TAG"):
-                    continue
-                parts = line.split()
-                if len(parts) < 6:
-                    continue
-                gate = parts[2]
-                ts = parts[3] + " " + parts[4]
-                fish = parts[5]
-                tag_end = fish[-3:]
-                if "D01" <= tag_end <= "D07":
-                    dummy += 1
-                    continue
-                batch.append((gate, ts, fish, fname))
+        # sort by fishid then timestamp
+        batch.sort(key=lambda r: (r.fishid, r.timestamp))
 
-            # Sort by fishid then timestamp (string compare to match Excel text behavior)
-            batch.sort(key=lambda r: (r[2], r[1]))
-
-            # Remove "in-between" duplicates for runs with same (fishid, gate)
-            cleaned = []
-            i = 0
-            while i < len(batch):
-                start = i
-                fid = batch[i][2]
-                g = batch[i][0]
+        # remove in-between duplicates
+        cleaned, i = [], 0
+        while i < len(batch):
+            start, fid, g = i, batch[i].fishid, batch[i].gate
+            i += 1
+            while i < len(batch) and batch[i].fishid == fid and batch[i].gate == g:
                 i += 1
-                while i < len(batch) and batch[i][2] == fid and batch[i][0] == g:
-                    i += 1
-                run = batch[start:i]
-                if len(run) >= 3:
-                    cleaned.append(run[0])      # keep first
-                    cleaned.append(run[-1])     # keep last
-                else:
-                    cleaned.extend(run)
+            run = batch[start:i]
+            if len(run) >= 3:
+                cleaned.append(run[0])  # keep first
+                cleaned.append(run[-1]) # keep last
+            else:
+                cleaned.extend(run)
 
-            if cleaned:
-                c.executemany("INSERT INTO records (gate, timestamp, fishid, logfile) VALUES (?,?,?,?)", cleaned)
-                added = len(cleaned)
+        if cleaned:
+            db.session.add_all(cleaned)
+            added_count = len(cleaned)
 
-            total_dummy += dummy
-            total_added += added
-            imported.append({"file": fname, "added": added, "dummy_removed": dummy})
+        total_dummy += dummy_count
+        total_added += added_count
+        details.append({"file": fname, "added": added_count, "dummy_removed": dummy_count})
 
-        conn.commit()
+        # record import
+        imp = Import(filename=fname, imported_on=str(date.today()))
+        db.session.merge(imp)  # upsert
 
-    return jsonify({
-        "summary": {"total_added": total_added, "total_dummy_removed": total_dummy},
-        "details": imported
-    })
+    db.session.commit()
+    return jsonify({"summary": {"total_added": total_added, "total_dummy_removed": total_dummy}, "details": details})
 
 @app.get("/api/records")
 def api_records():
-    """
-    Returns records (optional simple pagination).
-    Query params: offset, limit
-    """
-    offset = int(request.args.get("offset", 0))
-    limit = int(request.args.get("limit", 1000))
-    with get_conn() as conn:
-        c = conn.cursor()
-        c.execute("SELECT gate, timestamp, fishid, logfile FROM records ORDER BY fishid, timestamp LIMIT ? OFFSET ?", (limit, offset))
-        rows = [dict(r) for r in c.fetchall()]
-        return jsonify(rows)
+    rows = Record.query.limit(1000).all()
+    return jsonify([{"gate": r.gate, "timestamp": r.timestamp, "fishid": r.fishid, "logfile": r.logfile} for r in rows])
 
 @app.get("/api/counts")
 def api_counts():
-    with get_conn() as conn:
-        c = conn.cursor()
-        c.execute("SELECT COUNT(*) FROM records")
-        total = c.fetchone()[0]
-        c.execute("SELECT COUNT(DISTINCT fishid) FROM records")
-        unique_fish = c.fetchone()[0]
-        return jsonify({"antenna_hits": total, "unique_fish": unique_fish})
+    total = db.session.query(func.count(Record.id)).scalar()
+    unique_fish = db.session.query(func.count(func.distinct(Record.fishid))).scalar()
+    return jsonify({"antenna_hits": total, "unique_fish": unique_fish})
 
 @app.get("/api/imports")
 def api_imports():
-    with get_conn() as conn:
-        c = conn.cursor()
-        c.execute("SELECT filename, imported_on FROM imports ORDER BY imported_on DESC")
-        rows = [dict(r) for r in c.fetchall()]
-        return jsonify(rows)
+    rows = Import.query.all()
+    return jsonify([{"filename": r.filename, "imported_on": r.imported_on} for r in rows])
 
 if __name__ == "__main__":
-    init_db()
     app.run(host="0.0.0.0", port=5000, debug=True)
